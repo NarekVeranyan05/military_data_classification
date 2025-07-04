@@ -1,8 +1,11 @@
-import math
+import random
 from typing import Literal
 import numpy as np
 import pandas as pd
 import imageio.v3 as iio
+from PIL import Image
+import torch
+import torchvision.transforms as T
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.svm import SVC
 from scipy.stats import uniform, randint
@@ -13,22 +16,53 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import AdaBoostClassifier
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.decomposition import PCA
-from skimage import color
+# from skimage import color
 from skimage.transform import resize
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import StratifiedKFold
 
 
-def readData(dirs = [], class_part_index = 2):
+def readData(dirs = [], class_part_index = 2, augment=False):
     img_paths = [Path(d) for d in dirs]
     paths = []
     for path in img_paths:
         paths += list(path.glob('*.jpeg'))
         paths += list(path.glob('*.jpg'))
         paths += list(path.glob('*.png'))
+    random.shuffle(paths)
 
-    X = pd.DataFrame([resize(color.rgb2gray(iio.imread(path)), (32, 32)).flatten() for path in paths])
-    y = pd.Series([path.parts[class_part_index] for path in paths])
+    def apply_transform(image) -> torch.Tensor:
+        transform = T.Compose([
+            T.ToTensor(),
+            T.RandomHorizontalFlip(p=0.3),
+            T.RandomVerticalFlip(p=0.3),
+            T.RandomApply([T.RandomResizedCrop(size=(256, 256), scale=(0.6, 0.9))], p=0.5),
+            T.RandomRotation(degrees=(-30, 30)),
+            T.RandomApply([T.CenterCrop(100), T.Resize(size=(256, 256))], p=0.5),
+            T.RandomApply([T.GaussianBlur(kernel_size=5, sigma=(0.1, 2.0))], p=0.65)
+        ])
+        return transform(image)
+
+    X = []
+    y = []
+    if augment == True:
+        for path in paths:
+            img_pre_torch = resize(iio.imread(path), (256, 256))
+            X.append((img_pre_torch).flatten())
+            y.append(path.parts[class_part_index])
+            for i in range(3):
+                img_torch: torch.Tensor = apply_transform(img_pre_torch)
+                img_post_torch = np.transpose(img_torch.numpy(), (1, 2, 0))
+                X.append((img_post_torch).flatten())
+                y.append(path.parts[class_part_index])
+    else:
+        for path in paths:
+            img_pre_torch = resize(iio.imread(path), (256, 256))
+            X.append((img_pre_torch).flatten())
+            y.append(path.parts[class_part_index])
+    
+    X = pd.DataFrame(X)
+    y = pd.Series(y)
     return X, y
 
 def getModel():
@@ -94,7 +128,7 @@ def getModel():
         ('svc', SVC())
     ])
     param_dist = {
-        'svc__kernel':       ['linear', 'poly', 'rbf'],                # discrete choices
+        'svc__kernel':       ['linear', 'rbf'],                # discrete choices
         'svc__C':            uniform(1e-2, 0.1),                    # log-uniform between 0.01 and 100
         'svc__gamma':        uniform(1e-3, 1e-1),                    # log-uniform between 0.001 and 10
         'svc__degree':       randint(1, 5),                         # integers 1–4 (only used if kernel='poly')
@@ -114,20 +148,18 @@ def main():
     # getting the training and test data
     train_dirs = [
         "images/train/bmp", "images/train/btr", "images/train/cars",
-        "images/train/grad", "images/train/howitzer", "images/train/tank",
-        "images/val/bmp", "images/val/btr", "images/val/cars",
-        "images/val/grad", "images/val/howitzer", "images/val/tank"
+        "images/train/grad", "images/train/howitzer", "images/train/tank"
     ]
     test_dirs = ["test_images/bmp", "test_images/btr", "test_images/cars", "test_images/grad", "test_images/howitzer", "test_images/tank"]
-    X_train, y_train = readData(train_dirs, class_part_index=2)
+    X_train, y_train = readData(train_dirs, class_part_index=2, augment=True)
     X_test, y_test = readData(test_dirs, class_part_index=1)
 
     model = getModel()
-    model.fit(X_test, y_test)
-    y_pred = model.predict(X_test)
-    print((y_pred == y_test).sum()/len(y_test))
-
+    model.fit(X_train, y_train)
     y_pred = model.predict(X_train)
     print((y_pred == y_train).sum()/len(y_train))
+
+    y_pred = model.predict(X_test)
+    print((y_pred == y_test).sum()/len(y_test))
 
 main()
